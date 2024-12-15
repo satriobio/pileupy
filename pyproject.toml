@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pileupy"
+version = "1.0"
+authors = [
+    { name = "Satrio Wibowo", email = "satrio.biology@yahoo.com" }
+]
+readme = "README.md"
+requires-python = ">=3.8"
+description = "PileuPy"
+keywords = []
+dependencies = []
