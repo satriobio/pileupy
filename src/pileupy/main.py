@@ -10,6 +10,7 @@ from bokeh.io import curdoc
 from bokeh.server.server import Server
 from bokeh.application.handlers import FunctionHandler
 from bokeh.application import Application
+import time  # Add this import at the top of the file
 
 class Pileupy:
     def __init__(self, region, genome=None, reference=None):
@@ -151,22 +152,32 @@ class Pileupy:
         )
 
         # Create zoom buttons
-        zoom_in = Button(label="Zoom In", width=80)
-        zoom_out = Button(label="Zoom Out", width=80)
+        zoom_out = Button(label="-", button_type="primary", width=15)
+        zoom_in = Button(label="+", button_type="primary", width=15)
         
         # Create location text display
-        loc_text = Div(
-            text=f"{self.chrom}:{self.start:,}-{self.end:,}",
-            width=200
-        )
+        # loc_text = Div(
+        #     text=f"{self.chrom}:{self.start:,}-{self.end:,}",
+        #     width=200
+        # )
 
         def redraw_tracks():
             """Redraw all tracks with updated coordinates"""
-            print('redrawing')
-            # self.track_annotation('data/mod.bed')
+            # Store existing addon tracks
+            addons = self.plots[4:]
+            
+            # Clear existing plots and recreate base tracks
             self.plots = []
             self._create_base_tracks()
-            # self._update_layout()
+            
+            # Process addon tracks in batch
+            if addons:
+                for addon in addons:
+                    if len(addon.tags) > 0 and addon.tags[0].get('type') == 'alignment':
+                        self.track_alignment(addon.tags[0].get('bam_path'))
+                    if len(addon.tags) > 0 and addon.tags[0].get('type') == 'annotation':
+                        self.track_alignment(addon.tags[0].get('bed_path'))
+            self._update_layout()
 
             if curdoc().session_context:
                 curdoc().clear()
@@ -177,41 +188,15 @@ class Pileupy:
             try:
                 new_start = int(start_input.value.replace(',', ''))
                 new_end = int(end_input.value.replace(',', ''))
-                
-                # # Calculate current window size
-                # current_window = self.end - self.start
-                
-                # # If only one value changed significantly, adjust the other to maintain window size
-                # if abs(new_start - self.start) > abs(new_end - self.end):
-                #     # Start changed more than end
-                #     new_end = new_start + current_window
-                # elif abs(new_end - self.end) > abs(new_start - self.start):
-                #     # End changed more than start
-                #     new_start = new_end - current_window
-                
-                # # Validate range
-                # if new_start >= new_end:
-                #     raise ValueError("Start must be less than end")
-                    
-                # # Ensure coordinates are within bounds
-                # max_pos = self.chr_lengths.get(self.chrom, 0)
-                # if new_start < 0:
-                #     new_start = 0
-                #     new_end = new_start + current_window
-                # if new_end > max_pos:
-                #     new_end = max_pos
-                #     new_start = max(0, new_end - current_window)
                     
                 # Update coordinates
                 self.start = new_start
                 self.end = new_end
                 
                 # Update location text
-                loc_text.text = f"{self.chrom}:{self.start:,}-{self.end:,}"
+                # loc_text.text = f"{self.chrom}:{self.start:,}-{self.end:,}"
                 
-                # Redraw tracks with new coordinates
-                print('here')
-                print(self.start, self.end)
+                # Redraw tracks with new chromosome
                 redraw_tracks()
                 
             except ValueError as e:
@@ -227,7 +212,7 @@ class Pileupy:
             # Update inputs and location text
             start_input.value = str(self.start)
             end_input.value = str(self.end)
-            loc_text.text = f"{self.chrom}:{self.start:,}-{self.end:,}"
+            # loc_text.text = f"{self.chrom}:{self.start:,}-{self.end:,}"
             
             # Redraw tracks with new chromosome
             redraw_tracks()
@@ -238,7 +223,7 @@ class Pileupy:
             current_width = self.end - self.start
             
             if direction == 'in':
-                new_width = max(100, current_width // 2)  # Don't zoom in closer than 100bp
+                new_width = max(20, current_width // 2)  # Don't zoom in closer than 100bp
             else:
                 new_width = min(current_width * 2, self.chr_lengths.get(self.chrom, 0))
                 
@@ -253,7 +238,7 @@ class Pileupy:
             # Update inputs and location text
             start_input.value = str(new_start)
             end_input.value = str(new_end)
-            loc_text.text = f"{self.chrom}:{new_start:,}-{new_end:,}"
+            # loc_text.text = f"{self.chrom}:{new_start:,}-{new_end:,}"
             
             # Redraw tracks with new zoom level
             redraw_tracks()
@@ -270,10 +255,10 @@ class Pileupy:
             chrom_select,
             start_input,
             end_input,
-            zoom_in,
             zoom_out,
-            loc_text,
-            spacing=10
+            zoom_in,
+            spacing=10,
+            margin=(0, 0, 0, 20)
         )
 
         controls_layout = column(controls, sizing_mode="stretch_width")
@@ -355,12 +340,15 @@ class Pileupy:
                 )
         
         # Add current view indicator (red line)
-        view_pos = (self.start + self.end) / 2
-        p.line(
-            x=[view_pos, view_pos],
-            y=[5, 25],
+        p.rect(
+            x=(self.start + self.end) / 2,  # center x position
+            y=15,  # center y position (same as chromosome backbone)
+            width=self.end - self.start,  # width spans the current view
+            height=10,  # same height as chromosome backbone
+            fill_color='red',
+            fill_alpha=0.2,
             line_color='red',
-            line_width=2
+            line_width=1
         )
         
         # Configure axes
@@ -436,102 +424,69 @@ class Pileupy:
         """Create gene track visualization"""
         # Create the figure first with shared x range
         p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
-        
-        # Filter genes in view range
-        # visible_genes = [g for g in self.genes 
-        #                 if g['chrom'] == self.chrom and 
-        #                 not (g['end'] < self.start or g['start'] > self.end)]
+        p.y_range = Range1d(0, 50)
 
-        # if not visible_genes:
-            # Add placeholder text if no genes are found
-        # p.text(x=[self.start + (self.end - self.start)/2],
-        #         y=[25],
-        #         text=['No genes in this region'],
-        #         text_font_size='8pt',
-        #         text_baseline="middle",
-        #         text_align="center",
-        #         text_color='gray')
-        # else:
+        # Time the filtering operation
+        filter_start = time.time()
+        visible_genes = [g for g in self.genes 
+                        if g['chrom'] == self.chrom and 
+                        not (g['end'] < self.start or g['start'] > self.end)]
+        filter_time = time.time() - filter_start
+
+        # Prepare batch data for gene bodies
+        gene_lines_x = []
+        gene_lines_y = []
         
-        # Draw genes
+        # Prepare batch data for exons
+        exon_xs = []
+        exon_ys = []
+        exon_widths = []
+        
+        # Prepare batch data for gene names
+        text_xs = []
+        text_ys = []
+        text_labels = []
+
+        y_pos = 35
+        exon_height = 20
+        line_height = 1
+
         for gene in visible_genes:
-            y_pos = 25  # Base y position
-            exon_height = 1.5  # Reduced exon height
-            line_height = 1  # Height of the connecting line
-            arrow_size = 1  # Size of direction arrows
+            # Add gene body line coordinates
+            if (self.end - self.start) < 1000000:
+                gene_lines_x.extend([gene['start'], gene['end'], None])  # None creates a break between segments
+                gene_lines_y.extend([y_pos, y_pos, None])
 
-            # Draw gene body (thin blue line)
-            p.line(x=[gene['start'], gene['end']],
-                    y=[y_pos, y_pos],
-                    line_color='blue',
-                    line_width=line_height)
-
-            # Draw direction arrows along the gene body
-            # arrow_spacing = 50  # Pixels between arrows
-            # gene_length = gene['end'] - gene['start']
-            # num_arrows = max(1, min(10, gene_length // arrow_spacing))
-            # arrow_width = 6  # Width of the arrow
-            # arrow_height = 1  # Height of the arrow
-
-            # for i in range(num_arrows):
-            #     arrow_x = gene['start'] + (i + 0.5) * (gene_length / num_arrows)
-            #     if gene['strand'] == '+':
-            #         # Right-pointing arrow
-            #         xs = [
-            #             arrow_x - arrow_width/2,  # Left point
-            #             arrow_x + arrow_width/2,  # Right point (tip)
-            #             arrow_x - arrow_width/2   # Back to start
-            #         ]
-            #         ys = [
-            #             y_pos - arrow_height/2,  # Bottom point
-            #             y_pos,                   # Middle point (tip)
-            #             y_pos + arrow_height/2   # Top point
-            #         ]
-            #     else:  # '-' strand
-            #         # Left-pointing arrow
-            #         xs = [
-            #             arrow_x + arrow_width/2,  # Right point
-            #             arrow_x - arrow_width/2,  # Left point (tip)
-            #             arrow_x + arrow_width/2   # Back to start
-            #         ]
-            #         ys = [
-            #             y_pos - arrow_height/2,  # Bottom point
-            #             y_pos,                   # Middle point (tip)
-            #             y_pos + arrow_height/2   # Top point
-            #         ]
-                
-            #     p.patches(
-            #         xs=[xs],
-            #         ys=[ys],
-            #         fill_color='white',
-            #         line_color='black'
-            #     )
-
-            # Draw exons (blue rectangles)
+            # Add exon coordinates
             for start, end in zip(gene['exon_starts'], gene['exon_ends']):
-                if not (end < self.start or start > self.end):  # Only draw visible exons
-                    p.rect(x=[(start + end)/2],
-                            y=[y_pos],
-                            width=[end - start],
-                            height=[exon_height],
-                            color='blue',
-                            line_color='black',
-                            alpha=0.8)
+                if not (end < self.start or start > self.end):
+                    exon_xs.append((start + end)/2)
+                    exon_ys.append(y_pos)
+                    exon_widths.append(end - start)
 
-            if (self.end - self.start) < 1000:
-                # Add gene name in the middle of the gene, level with exons
-                p.text(x=[(gene['start'] + gene['end']) / 2],
-                    y=[y_pos],  # Position text at the same level as exons
-                    text=[gene['name']],
-                    text_font_size='8pt',
-                    text_baseline="middle",
-                    text_align="center")
+            if (self.end - self.start) < 1000000:
+                text_xs.append((gene['start'] + gene['end']) / 2)
+                text_ys.append(15)
+                text_labels.append(gene['name'])
 
+        # Batch plot gene body lines
+        if gene_lines_x:
+            p.line(x=gene_lines_x, y=gene_lines_y, line_color='blue', line_width=line_height)
+
+        # Batch plot exons
+        if exon_xs:
+            p.rect(x=exon_xs, y=exon_ys, width=exon_widths, height=exon_height,
+                   color='blue', line_color=None)
+
+        # Batch plot gene names
+        if text_xs:
+            p.text(x=text_xs, y=text_ys, text=text_labels,
+                   text_font_size='8pt', text_baseline="middle", text_align="center")
+   
         # Configure axes
         p.xaxis.visible = False
         p.yaxis.visible = False
         p.grid.visible = False
-
         p.toolbar_location = None
 
         self.plots.append(p)
@@ -542,31 +497,41 @@ class Pileupy:
         """Create the coverage track"""
         # Create the figure first with shared x range
         p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
-        
-        coverage = bam.count_coverage(self.chrom, self.start, self.end)
-        total_coverage = np.sum(coverage, axis=0)
-        
-        source = ColumnDataSource({
-            'x': np.arange(self.start, self.end),
-            'y': total_coverage,
-            'height': total_coverage
-        })
-        
-        p.vbar(x='x', top='y', width=1, source=source,
-               fill_color='gray', line_color='gray', line_width=5)
-        
         p.xaxis.visible = False
-        min_val = 0
-        print(total_coverage)
-        max_val = int(max(total_coverage))
-        p.yaxis.ticker = [min_val, max_val]
-
+        p.yaxis.visible = False
+        if (self.end - self.start) >= 10000:
+            p.text(x=[self.start + (self.end - self.start)/2],
+                    y=[25],
+                    text=['Zoom in to view coverage'],
+                    text_font_size='8pt',
+                    text_baseline="middle",
+                    text_align="center",
+                    text_color='gray')
+        else:
+            coverage = bam.count_coverage(self.chrom, self.start, self.end)
+            total_coverage = np.sum(coverage, axis=0)
+            
+            source = ColumnDataSource({
+                'x': np.arange(self.start, self.end),
+                'y': total_coverage,
+                'height': total_coverage
+            })
+            
+            p.vbar(x='x', top='y', width=1, source=source,
+                fill_color='gray', line_color=None)
+            
+            p.xaxis.visible = False
+            p.yaxis.visible = True
+            min_val = 0
+            max_val = int(max(total_coverage))
+            p.yaxis.ticker = [min_val, max_val]
+    
         p.grid.visible = False
 
         p.toolbar_location = None
-        
-        self.plots.append(p)
-        self._update_layout()
+            
+        # self.plots.append(p)
+        # self._update_layout()
         return p
 
     def track_alignment(self, bam_path, mode='collapsed'):
@@ -583,204 +548,217 @@ class Pileupy:
         p = bplt.figure(width=800, height=200, 
                         tools='xwheel_zoom,xwheel_pan',
                         x_range=self.shared_x_range)
-        
-        # Calculate optimal height ONCE using the correct method name
-        optimal_height = self._calculate_optimal_height(len(reads))
-        p.height = optimal_height
-        p.y_range = Range1d(0, optimal_height)
-        
-        # Draw alignment track
-        print(f"Number of reads found: {len(reads)}")
-        
-        read_data = {
-            'xs': [], 'ys': [], 'colors': [],
-            'snp_xs': [], 'snp_ys': [], 'snp_colors': [],  # Added snp_colors
-            'snp_heights': []  # Added for line heights
-        }
-        
-        region_length = self.end - self.start
-        max_rows = optimal_height // (self.read_height + self.spacing)
-        occupied = np.zeros((max_rows, region_length), dtype=bool)
-        
-        processed_count = 0
-        for read_idx, read in enumerate(reads):
-            try:
-                if not read.is_unmapped and read.reference_length:
-                    read_start_rel = read.reference_start - self.start
-                    read_end_rel = read_start_rel + read.reference_length
-                    
-                    # Find available row
-                    row = 0
-                    while row < max_rows:
-                        start_idx = max(0, read_start_rel)
-                        end_idx = min(region_length, read_end_rel)
-                        check_start = max(0, start_idx - 1)
-                        check_end = min(region_length, end_idx + 1)
+        p.tags = [{"type": "alignment",
+                   "bam_path": bam_path,
+                    }]
+
+        if (self.end - self.start) >= 10000:
+            p.text(x=[self.start + (self.end - self.start)/2],
+                    y=[25],
+                    text=['Zoom in to view alignments'],
+                    text_font_size='8pt',
+                    text_baseline="middle",
+                    text_align="center",
+                    text_color='gray')
+        else:
+            
+            # Calculate optimal height ONCE using the correct method name
+            optimal_height = self._calculate_optimal_height(len(reads))
+            p.height = optimal_height
+            p.y_range = Range1d(0, optimal_height)
+            
+            # Draw alignment track
+            print(f"Number of reads found: {len(reads)}")
+            
+            read_data = {
+                'xs': [], 'ys': [], 'colors': [],
+                'snp_xs': [], 'snp_ys': [], 'snp_colors': [],  # Added snp_colors
+                'snp_heights': []  # Added for line heights
+            }
+            
+            region_length = self.end - self.start
+            max_rows = optimal_height // (self.read_height + self.spacing)
+            occupied = np.zeros((max_rows, region_length), dtype=bool)
+            
+            processed_count = 0
+            for read_idx, read in enumerate(reads):
+                try:
+                    if not read.is_unmapped and read.reference_length:
+                        read_start_rel = read.reference_start - self.start
+                        read_end_rel = read_start_rel + read.reference_length
                         
-                        if start_idx < end_idx and not any(occupied[row][check_start:check_end]):
-                            occupied[row][start_idx:end_idx] = True
-                            break
-                        row += 1
-                    
-                    if row < max_rows:
-                        processed_count += 1
-                        y_pos = optimal_height - (row + 1) * (self.read_height + self.spacing)
-                        
-                        # Calculate arrow points
-                        x_start = read.reference_start
-                        x_end = read.reference_start + read.reference_length
-                        y_top = y_pos + self.read_height
-                        y_bottom = y_pos
-                        arrow_width = 2  # Changed from 3 to 2
-                        
-                        y_mid = y_pos + (self.read_height / 2)  # Calculate middle y-position
-                        
-                        if read.is_reverse:
-                            # Left-pointing arrow (reverse strand)
-                            xs = [
-                                x_start, x_end,          # Bottom line
-                                x_end, x_end,            # Right edge
-                                x_end, x_start + arrow_width,  # Top line
-                                x_start + arrow_width, x_start + arrow_width/2,  # Arrow point top (less sharp)
-                                x_start + arrow_width/2, x_start + arrow_width,  # Arrow point bottom (less sharp)
-                                x_start + arrow_width              # Back to start
-                            ]
-                            ys = [
-                                y_bottom, y_bottom,      # Bottom line
-                                y_bottom, y_top,         # Right edge
-                                y_top, y_top,           # Top line
-                                y_top, y_mid,           # Arrow point top
-                                y_mid, y_bottom,        # Arrow point bottom
-                                y_bottom                # Back to start
-                            ]
-                        else:
-                            # Right-pointing arrow (forward strand)
-                            xs = [
-                                x_start, x_end - arrow_width,  # Bottom line
-                                x_end - arrow_width, x_end - arrow_width/2,    # Arrow point bottom (less sharp)
-                                x_end - arrow_width/2, x_end - arrow_width,    # Arrow point top (less sharp)
-                                x_end - arrow_width, x_start,  # Back to start
-                                x_start, x_start              # Left edge
-                            ]
-                            ys = [
-                                y_bottom, y_bottom,      # Bottom line
-                                y_bottom, y_mid,         # Arrow point
-                                y_mid, y_top,           # Top line
-                                y_top, y_top,           # Back to start
-                                y_top, y_bottom         # Left edge
-                            ]
-                        
-                        read_data['xs'].append(xs)
-                        read_data['ys'].append(ys)
-                        read_data['colors'].append('#E0E0E0')
-                        
-                        # Check for SNPs
-                        if read.query_sequence and self.ref_seq:
-                            ref_pos = read.reference_start - self.start
-                            query_pos = 0
+                        # Find available row
+                        row = 0
+                        while row < max_rows:
+                            start_idx = max(0, read_start_rel)
+                            end_idx = min(region_length, read_end_rel)
+                            check_start = max(0, start_idx - 1)
+                            check_end = min(region_length, end_idx + 1)
                             
-                            for op, length in read.cigartuples:
-                                if op == 0:  # Match/mismatch
-                                    for i in range(length):
-                                        if (ref_pos + i >= 0 and 
-                                            ref_pos + i < len(self.ref_seq) and 
-                                            query_pos + i < len(read.query_sequence)):
-                                            
-                                            ref_base = self.ref_seq[ref_pos + i].upper()
-                                            query_base = read.query_sequence[query_pos + i].upper()
-                                            
-                                            if ref_base != query_base:
-                                                read_data['snp_xs'].append(read.reference_start + i)
-                                                read_data['snp_ys'].append(y_pos)
-                                                read_data['snp_colors'].append(self.base_colors.get(query_base, '#808080'))
-                                                read_data['snp_heights'].append(self.read_height)
-                                    
-                                    ref_pos += length
-                                    query_pos += length
-                                elif op == 1:  # Insertion
-                                    query_pos += length
-                                elif op == 2:  # Deletion
-                                    ref_pos += length
-                                    
-            except Exception as e:
-                print(f"Error processing read {read_idx}: {str(e)}")
-                continue
-        print(f"\nProcessed {processed_count} out of {len(reads)} reads")
-        
-        if len(read_data['xs']) > 0:
-            # Add additional data for tooltips
-            read_data['read_names'] = []
-            read_data['mapping_qualities'] = []
-            read_data['cigar_strings'] = []
-            read_data['read_lengths'] = []
+                            if start_idx < end_idx and not any(occupied[row][check_start:check_end]):
+                                occupied[row][start_idx:end_idx] = True
+                                break
+                            row += 1
+                        
+                        if row < max_rows:
+                            processed_count += 1
+                            y_pos = optimal_height - (row + 1) * (self.read_height + self.spacing)
+                            
+                            # Calculate arrow points
+                            x_start = read.reference_start
+                            x_end = read.reference_start + read.reference_length
+                            y_top = y_pos + self.read_height
+                            y_bottom = y_pos
+                            arrow_width = 2  # Changed from 3 to 2
+                            
+                            y_mid = y_pos + (self.read_height / 2)  # Calculate middle y-position
+                            
+                            if read.is_reverse:
+                                # Left-pointing arrow (reverse strand)
+                                xs = [
+                                    x_start, x_end,          # Bottom line
+                                    x_end, x_end,            # Right edge
+                                    x_end, x_start + arrow_width,  # Top line
+                                    x_start + arrow_width, x_start + arrow_width/2,  # Arrow point top (less sharp)
+                                    x_start + arrow_width/2, x_start + arrow_width,  # Arrow point bottom (less sharp)
+                                    x_start + arrow_width              # Back to start
+                                ]
+                                ys = [
+                                    y_bottom, y_bottom,      # Bottom line
+                                    y_bottom, y_top,         # Right edge
+                                    y_top, y_top,           # Top line
+                                    y_top, y_mid,           # Arrow point top
+                                    y_mid, y_bottom,        # Arrow point bottom
+                                    y_bottom                # Back to start
+                                ]
+                            else:
+                                # Right-pointing arrow (forward strand)
+                                xs = [
+                                    x_start, x_end - arrow_width,  # Bottom line
+                                    x_end - arrow_width, x_end - arrow_width/2,    # Arrow point bottom (less sharp)
+                                    x_end - arrow_width/2, x_end - arrow_width,    # Arrow point top (less sharp)
+                                    x_end - arrow_width, x_start,  # Back to start
+                                    x_start, x_start              # Left edge
+                                ]
+                                ys = [
+                                    y_bottom, y_bottom,      # Bottom line
+                                    y_bottom, y_mid,         # Arrow point
+                                    y_mid, y_top,           # Top line
+                                    y_top, y_top,           # Back to start
+                                    y_top, y_bottom         # Left edge
+                                ]
+                            
+                            read_data['xs'].append(xs)
+                            read_data['ys'].append(ys)
+                            read_data['colors'].append('#E0E0E0')
+                            
+                            # Check for SNPs
+                            if read.query_sequence and self.ref_seq:
+                                ref_pos = read.reference_start - self.start
+                                query_pos = 0
+                                
+                                for op, length in read.cigartuples:
+                                    if op == 0:  # Match/mismatch
+                                        for i in range(length):
+                                            if (ref_pos + i >= 0 and 
+                                                ref_pos + i < len(self.ref_seq) and 
+                                                query_pos + i < len(read.query_sequence)):
+                                                
+                                                ref_base = self.ref_seq[ref_pos + i].upper()
+                                                query_base = read.query_sequence[query_pos + i].upper()
+                                                
+                                                if ref_base != query_base:
+                                                    read_data['snp_xs'].append(read.reference_start + i)
+                                                    read_data['snp_ys'].append(y_pos)
+                                                    read_data['snp_colors'].append(self.base_colors.get(query_base, '#808080'))
+                                                    read_data['snp_heights'].append(self.read_height)
+                                        
+                                        ref_pos += length
+                                        query_pos += length
+                                    elif op == 1:  # Insertion
+                                        query_pos += length
+                                    elif op == 2:  # Deletion
+                                        ref_pos += length
+                                        
+                except Exception as e:
+                    print(f"Error processing read {read_idx}: {str(e)}")
+                    continue
+            print(f"\nProcessed {processed_count} out of {len(reads)} reads")
             
-            # Populate the additional data while processing reads
-            for read in reads:
-                if not read.is_unmapped and read.reference_length:
-                    read_data['read_names'].append(read.query_name)
-                    read_data['mapping_qualities'].append(read.mapping_quality)
-                    read_data['cigar_strings'].append(read.cigarstring)
-                    read_data['read_lengths'].append(len(read.query_sequence) if read.query_sequence else 0)
-            
-            source = ColumnDataSource(read_data)
-            
-            # Add tooltips
-            tooltips = [
-                ('Read Name', '@read_names'),
-                ('Mapping Quality', '@mapping_qualities'),
-                ('CIGAR', '@cigar_strings'),
-                ('Length', '@read_lengths')
-            ]
-            
-            # Add HoverTool
-            hover_tool = HoverTool(tooltips=tooltips, renderers=[])
-            p.add_tools(hover_tool)
-            
-            # Draw reads as interactive patches
-            patches = p.patches(
-                xs='xs',
-                ys='ys',
-                source=source,
-                fill_color='colors',
-                line_color=None,
-                alpha=0.8,
-                name='read_patches'  # Add name for identification
-            )
-            
-            # Add hover tool to the patches renderer
-            hover_tool.renderers.append(patches)
-            
-            # Add tap (click) callback
-            source.selected.on_change('indices', lambda attr, old, new: self.on_read_click(attr, old, new, source))
-            
-            # Add TapTool
-            p.add_tools(TapTool())
-            
-            # Draw SNPs
-            if len(read_data['snp_xs']) > 0:
-                snp_source = ColumnDataSource({
-                    'x': read_data['snp_xs'],
-                    'y': read_data['snp_ys'],
-                    'y1': [y + h for y, h in zip(read_data['snp_ys'], read_data['snp_heights'])],
-                    'color': read_data['snp_colors']
-                })
+            if len(read_data['xs']) > 0:
+                # Add additional data for tooltips
+                read_data['read_names'] = []
+                read_data['mapping_qualities'] = []
+                read_data['cigar_strings'] = []
+                read_data['read_lengths'] = []
                 
-                p.segment(
-                    x0='x', y0='y',
-                    x1='x', y1='y1',  # Use pre-calculated y1 values
-                    color='color',
-                    line_width=2,
-                    source=snp_source,
-                    alpha=0.8
+                # Populate the additional data while processing reads
+                for read in reads:
+                    if not read.is_unmapped and read.reference_length:
+                        read_data['read_names'].append(read.query_name)
+                        read_data['mapping_qualities'].append(read.mapping_quality)
+                        read_data['cigar_strings'].append(read.cigarstring)
+                        read_data['read_lengths'].append(len(read.query_sequence) if read.query_sequence else 0)
+                
+                source = ColumnDataSource(read_data)
+                
+                # Add tooltips
+                tooltips = [
+                    ('Read Name', '@read_names'),
+                    ('Mapping Quality', '@mapping_qualities'),
+                    ('CIGAR', '@cigar_strings'),
+                    ('Length', '@read_lengths')
+                ]
+                
+                # Add HoverTool
+                hover_tool = HoverTool(tooltips=tooltips, renderers=[])
+                p.add_tools(hover_tool)
+                
+                # Draw reads as interactive patches
+                patches = p.patches(
+                    xs='xs',
+                    ys='ys',
+                    source=source,
+                    fill_color='colors',
+                    line_color=None,
+                    alpha=0.8,
+                    name='read_patches'  # Add name for identification
                 )
-        
-        # Adjust y_range based on actual data
-        if len(read_data['ys']) > 0:
-            min_y = min([min(y) for y in read_data['ys']]) - self.read_height
-            max_y = optimal_height
-            p.y_range = Range1d(min_y, max_y)
-        
-        # Remove x-axis ticks and labels
+                
+                # Add hover tool to the patches renderer
+                hover_tool.renderers.append(patches)
+                
+                # Add tap (click) callback
+                source.selected.on_change('indices', lambda attr, old, new: self.on_read_click(attr, old, new, source))
+                
+                # Add TapTool
+                p.add_tools(TapTool())
+                
+                # Draw SNPs
+                if len(read_data['snp_xs']) > 0:
+                    snp_source = ColumnDataSource({
+                        'x': read_data['snp_xs'],
+                        'y': read_data['snp_ys'],
+                        'y1': [y + h for y, h in zip(read_data['snp_ys'], read_data['snp_heights'])],
+                        'color': read_data['snp_colors']
+                    })
+                    
+                    p.segment(
+                        x0='x', y0='y',
+                        x1='x', y1='y1',  # Use pre-calculated y1 values
+                        color='color',
+                        line_width=2,
+                        source=snp_source,
+                        alpha=0.8
+                    )
+            
+            # Adjust y_range based on actual data
+            if len(read_data['ys']) > 0:
+                min_y = min([min(y) for y in read_data['ys']]) - self.read_height
+                max_y = optimal_height
+                p.y_range = Range1d(min_y, max_y)
+            
+            # Remove x-axis ticks and labels
         p.xaxis.visible = False
         p.yaxis.visible = False
         p.grid.visible = False
@@ -801,6 +779,7 @@ class Pileupy:
         """
         # Create new figure
         p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
+        p.tags = [{"type": "annotations"}]
         
         # Load and filter annotations
         annotations = load_bed(bed_path)
