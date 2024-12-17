@@ -12,6 +12,793 @@ from bokeh.application.handlers import FunctionHandler
 from bokeh.application import Application
 import time  # Add this import at the top of the file
 
+
+class TrackControl:
+    def __init__(self, chr_lengths, chrom, start, end, update_callback):
+        self.update_callback = update_callback        
+        self._fetch(chr_lengths, chrom, start, end)
+        self._figure()
+    
+    def _fetch(self, chr_lengths, chrom, start, end):
+        self.chr_lengths = chr_lengths        
+        self.chroms = sorted(list(chr_lengths.keys()), key=_chr_sort_key)
+        self.chrom = chrom
+        self.start = start
+        self.end = end
+    
+    def _update(self):
+        # This function can be used internally
+        self.update_callback(self.chrom, self.start, self.end)  # Call the callback when needed
+    
+    def _figure(self):
+        chrom_select = Select(
+            value=self.chrom,
+            options=self.chroms,
+            width=100
+        )
+
+        start_input = TextInput(
+            value=str(self.start),
+            width=120
+        )
+        
+        end_input = TextInput(
+            value=str(self.end),
+            width=120
+        )
+
+        zoom_out = Button(label="-", button_type="primary", width=15)
+        zoom_in = Button(label="+", button_type="primary", width=15)
+
+        # Define callbacks
+        def update_region(attr, old, new):
+            """Update the viewed region"""
+            new_start = int(start_input.value.replace(',', ''))
+            new_end = int(end_input.value.replace(',', ''))                    
+            
+            self.start = new_start
+            self.end = new_end
+
+            self._update()
+
+        def update_chrom(attr, old, new):
+            """Handle chromosome selection"""
+            self.chrom = new
+            self.start = 0
+            self.end = self.chr_lengths.get(new, 0)
+            start_input.value = str(self.start)
+            end_input.value = str(self.end)
+
+            self._update()
+
+        def zoom(direction):
+            """Handle zoom in/out"""
+            center = (self.start + self.end) // 2
+            current_width = self.end - self.start
+            
+            if direction == 'in':
+                new_width = max(20, current_width // 2)  # Don't zoom in closer than 100bp
+            else:
+                new_width = min(current_width * 2, self.chr_lengths.get(self.chrom, 0))
+                
+            half_width = new_width // 2
+            new_start = max(0, center - half_width)
+            new_end = min(self.chr_lengths.get(self.chrom, 0), center + half_width)
+            
+            self.start = new_start
+            self.end = new_end
+            
+            start_input.value = str(new_start)
+            end_input.value = str(new_end)
+
+            self._update()
+
+        # Connect callbacks
+        chrom_select.on_change('value', update_chrom)
+        start_input.on_change('value', update_region)
+        end_input.on_change('value', update_region)
+        zoom_in.on_click(lambda: zoom('in'))
+        zoom_out.on_click(lambda: zoom('out'))
+
+        # Create control panel layout
+        controls = row(
+            chrom_select,
+            start_input,
+            end_input,
+            zoom_out,
+            zoom_in,
+            spacing=10,
+            margin=(0, 0, 0, 20),
+            sizing_mode="stretch_width",  # Make controls stretch horizontally
+            width_policy="max"
+        )
+
+        self.figure = column(
+            controls, 
+            sizing_mode="stretch_width",
+            width_policy="max",
+            # height_policy="fit"
+        )
+
+    
+    def _renderers(self):
+        pass
+
+class TrackIdiogram:
+    def __init__(self, cytobands, chr_lengths, chrom, start, end, shared_x_range):
+        self.stain_colors = {
+            'gneg': '#ffffff',
+            'gpos25': '#c0c0c0',
+            'gpos50': '#808080',
+            'gpos75': '#404040',
+            'gpos100': '#000000',
+            'acen': '#963232',
+            'gvar': '#000000',
+            'stalk': '#963232',
+        }
+        
+        # Initialize data sources
+        self.source_backbone = ColumnDataSource({
+            'x': [], 'y': [], 'width': [], 'height': []
+        })
+        self.source_bands = ColumnDataSource({
+            'x': [], 'y': [], 'width': [], 'height': [], 'color': []
+        })
+        self.source_centromeres = ColumnDataSource({
+            'xs': [], 'ys': [], 'color': []
+        })
+        self.source_view = ColumnDataSource({
+            'x': [], 'y': [], 'width': [], 'height': []
+        })
+        
+        self._figure()
+        self._renderers()
+        self._fetch(cytobands, chr_lengths, chrom, start, end)
+
+    def _fetch(self, cytobands, chr_lengths, chrom, start, end):
+        """Prepare data for plotting"""
+        self.cytobands = cytobands
+        self.chr_lengths = chr_lengths
+        self.chrom = chrom
+
+        self.start = start
+        self.end = end
+        
+        # Filter cytobands for current chromosome
+        self.chr_cytobands = [c for c in self.cytobands if c['chrom'] == self.chrom]
+        self.chr_length = self.chr_lengths.get(self.chrom, 0)
+        
+        # Prepare backbone data
+        backbone_data = {
+            'x': [self.chr_length/2],
+            'y': [15],
+            'width': [self.chr_length],
+            'height': [10]
+        }
+        self.source_backbone.data = backbone_data
+        
+        # Prepare band data
+        band_data = {
+            'x': [], 'y': [], 'width': [], 'height': [], 'color': []
+        }
+        centromere_data = {
+            'xs': [], 'ys': [], 'color': []
+        }
+        
+        for band in self.chr_cytobands:
+            width = band['end'] - band['start']
+            x = band['start'] + width/2
+            
+            if band['stain'] == 'acen':
+                # Centromere data
+                if band['name'].startswith('p'):
+                    xs = [band['start'], band['end'], band['start']]
+                    ys = [10, 15, 20]
+                else:
+                    xs = [band['start'], band['end'], band['end']]
+                    ys = [15, 20, 10]
+                centromere_data['xs'].append(xs)
+                centromere_data['ys'].append(ys)
+                centromere_data['color'].append(self.stain_colors['acen'])
+            else:
+                # Regular band data
+                band_data['x'].append(x)
+                band_data['y'].append(15)
+                band_data['width'].append(width)
+                band_data['height'].append(10)
+                band_data['color'].append(self.stain_colors.get(band['stain'], '#ffffff'))
+        
+        self.source_bands.data = band_data
+        self.source_centromeres.data = centromere_data
+        
+        # Prepare view indicator data
+        view_data = {
+            'x': [(self.start + self.end) / 2],
+            'y': [15],
+            'width': [self.end - self.start],
+            'height': [10]
+        }
+        self.source_view.data = view_data
+
+    def _update(self, ref, chrom, start, end, shared_x_range):
+        """Update the visualization with new data"""
+        
+        # Update the shared x_range
+        self._fetch(self.cytobands, self.chr_lengths, chrom, start, end)
+
+        self.figure.x_range.start = 0
+        self.figure.x_range.end = self.chr_length
+
+    def _figure(self):
+        """Create and configure the figure"""
+        fig = bplt.figure(
+            width_policy="max",  # Allow figure to stretch horizontally
+            height=30,  # Fixed height
+            sizing_mode="stretch_width",  # Make figure responsive to container width
+            tools=''
+        )
+        
+        # Configure axes
+        fig.xaxis.visible = False
+        fig.yaxis.visible = False
+        fig.grid.visible = False
+        
+        # Disable all interactions
+        fig.toolbar_location = None
+        fig.tools = []
+        fig.toolbar.tools = []
+        
+        self.figure = fig
+        return fig
+
+    def _renderers(self):
+        """Set up all renderers using data sources"""
+        
+        # Draw chromosome backbone
+        self.figure.rect(
+            x='x', y='y',
+            width='width', height='height',
+            fill_color='white',
+            line_color='black',
+            source=self.source_backbone
+        )
+        
+        # Draw regular bands
+        self.figure.rect(
+            x='x', y='y',
+            width='width', height='height',
+            fill_color='color',
+            line_color='black',
+            line_width=0.5,
+            source=self.source_bands
+        )
+        
+        # Draw centromeres
+        self.figure.patches(
+            xs='xs', ys='ys',
+            fill_color='color',
+            line_color='black',
+            source=self.source_centromeres
+        )
+        
+        # Draw current view indicator
+        self.figure.rect(
+            x='x', y='y',
+            width='width', height='height',
+            fill_color='red',
+            fill_alpha=0.2,
+            line_color='red',
+            line_width=1,
+            source=self.source_view
+        )
+
+class TrackReference:
+    def __init__(self, ref, chrom, start, end, shared_x_range):
+        self.base_colors = {
+            'A': '#00FF00',  # Green
+            'T': '#FF0000',  # Red
+            'C': '#0000FF',  # Blue
+            'G': '#FFA500'   # Orange
+        }
+        self.source_block = ColumnDataSource({
+            'x': [], 
+            'y': [],
+            'text': [],
+            'colors': []
+        })
+        self.source_letter = ColumnDataSource({
+            'x': [], 
+            'y': [],
+            'text': [],
+            'colors': []
+        })
+        self.source_message = ColumnDataSource({
+            'x': [],
+            'y': [],
+            'text': []
+        })
+        
+        self.shared_x_range = shared_x_range
+        self._figure(shared_x_range)
+        self._renderers()
+        self._fetch(ref, chrom, start, end)
+
+    def _fetch(self, ref, chrom, start, end):
+        """Prepare data for plotting by updating the sources"""
+        self.start = start
+        self.end = end
+        span = self.end - self.start
+
+        x = np.arange(start, end)
+        y = [2] * len(x)
+        
+        # Clear all sources
+        empty_data = {
+            'x': [], 
+            'y': [],
+            'text': [],
+            'colors': []
+        }
+        self.source_block.data = empty_data.copy()
+        self.source_letter.data = empty_data.copy()
+        self.source_message.data = {'x': [], 'y': [], 'text': []}
+
+        if span >= 10000:
+            # Show "zoom in" message
+            self.source_message.data = {
+                'x': [start + span/2],
+                'y': [2],
+                'text': ['Zoom in to see reference sequence']
+            }
+        else:
+            # Fetch sequence data
+            self.ref_seq = ref.fetch(chrom, start, end)
+            sequence = list(self.ref_seq.upper())
+            colors = [self.base_colors.get(base.upper(), 'gray') for base in self.ref_seq]
+
+            if span >= 70:  # Show blocks
+                self.source_block.data = {
+                    'x': x,
+                    'y': y,
+                    'text': sequence,
+                    'colors': colors
+                }
+            else:  # Show letters
+                self.source_letter.data = {
+                    'x': x,
+                    'y': y,
+                    'text': sequence,
+                    'colors': colors
+                }
+
+    def _update(self, ref, chrom, start, end, shared_x_range):
+        """Update the visualization with new data"""
+
+        # print(f"Updating track reference with {chrom}:{start}-{end}, {shared_x_range}")
+        self._fetch(ref, chrom, start, end)
+        
+        # Update the shared x_range
+        self.shared_x_range.start = start
+        self.shared_x_range.end = end
+
+    def _figure(self, shared_x_range):
+        """Create and configure the figure"""
+        fig = bplt.figure(width_policy="max", height=50, tools='', x_range=shared_x_range)
+        
+        # Configure axes
+        fig.xaxis.visible = True
+        fig.xaxis.axis_label_text_font_size = '10pt'
+        fig.xaxis[0].formatter.use_scientific = False
+        fig.xaxis.axis_line_color = 'black'
+        fig.xaxis.major_tick_line_color = 'black'
+        fig.xaxis.minor_tick_line_color = None
+        fig.above = fig.below  # Move axis to top
+        fig.below = []  # Remove bottom axis
+
+        fig.yaxis.visible = False
+        fig.grid.visible = False
+    
+        # Disable all interactions
+        fig.toolbar_location = None
+        fig.tools = []
+        fig.toolbar.tools = []
+
+        self.figure = fig
+        return fig
+
+    def _renderers(self):
+        """Set up all renderers once during initialization"""
+
+        # Add message renderer
+        self.figure.text(
+            x='x',
+            y='y',
+            text='text',
+            text_font_size='8pt',
+            text_baseline="middle",
+            text_align="center",
+            text_color='gray',
+            source=self.source_message
+        )
+        
+        # Add block renderer
+        self.figure.rect(
+            x='x', 
+            y='y', 
+            width=1, 
+            height=2,
+            fill_color='colors', 
+            line_color=None, 
+            source=self.source_block
+        )
+        
+        # Add letter renderer
+        self.figure.text(
+            x='x', 
+            y='y', 
+            text='text', 
+            text_color='colors', 
+            source=self.source_letter,
+            text_baseline="middle", 
+            text_align="center"
+        )
+
+class TrackAlignment:
+    def __init__(self, ref, bam, chrom, start, end, shared_x_range):
+        # Initialize data sources
+        self.base_colors = {
+            'A': '#00FF00',  # Green
+            'T': '#FF0000',  # Red
+            'C': '#0000FF',  # Blue
+            'G': '#FFA500'   # Orange
+        }
+
+        self.source_coverage = ColumnDataSource({
+            'x': [],
+            'y': [],
+            'height': []
+        })
+
+        self.source_reads = ColumnDataSource({
+            'xs': [], 'ys': [], 'colors': [],
+            'read_names': [], 'mapping_qualities': [], 
+            'cigar_strings': [], 'read_lengths': []
+        })
+        
+        self.source_snps_rect = ColumnDataSource({
+            'x': [], 'y': [], 'height': [], 'color': []
+        })
+        
+        self.source_snps_text = ColumnDataSource({
+            'x': [], 'y': [], 'color': [], 'text': []
+        })
+        
+        self.source_message = ColumnDataSource({
+            'x': [], 'y': [], 'text': []
+        })
+        
+        # Set fixed dimensions for reads
+        self.read_height = 10  # Fixed read height
+        self.spacing = 6      # Fixed spacing between reads
+        self.default_view_height = 400  # Default visible height
+        
+        self.shared_x_range = shared_x_range
+        self._figure(shared_x_range)
+        self._renderers()
+        self._fetch(ref, bam, chrom, start, end)
+
+    def _fetch(self, ref, bam, chrom, start, end):
+        self.bam = bam
+        self.start = start
+        self.end = end
+
+        self.ref_seq = ref.fetch(chrom, start, end)
+
+        if (self.end - self.start) >= 10000:
+            self.source_coverage.data = {
+                'x': [],
+                'y': [],
+                'height': []
+            }
+        else:
+            coverage = bam.count_coverage(chrom, start, end)
+            total_coverage = np.sum(coverage, axis=0)  # Sum across bases
+            self.source_coverage.data = {
+                'x': np.arange(self.start, self.end),
+                'y': total_coverage,
+                'height': total_coverage
+            }
+
+        # Prepare data containers
+        message_data = {
+            'x': [], 'y': [], 'text': []
+        }
+        read_data = {
+            'xs': [], 'ys': [], 'colors': [],
+            'read_names': [], 'mapping_qualities': [],
+            'cigar_strings': [], 'read_lengths': []
+        }
+        snp_rect_data = {
+            'x': [], 'y': [], 'height': [], 'color': []
+        }
+        snp_text_data = {
+            'x': [], 'y': [], 'color': [], 'text': []
+        }
+
+        if (self.end - self.start) >= 10000:
+            self.source_message.data = {
+                'x': [start + (end - start)/2],
+                'y': [self.default_view_height/2],
+                'text': ['Zoom in to view alignments']
+            }
+            self.source_reads.data = read_data
+            self.source_snps_rect.data = snp_rect_data
+            self.source_snps_text.data = snp_text_data
+            return
+        else:
+            self.reads = list(bam.fetch(chrom, start, end))
+            self.source_message.data = message_data
+
+        # Track occupied positions for read placement
+        occupied_positions = []  # List of (start, end) tuples for each row
+
+        # Process reads and collect data
+        for read in self.reads:
+            if not read.is_unmapped and read.reference_length:
+                read_start = read.reference_start
+                read_end = read.reference_start + read.reference_length
+                
+                # Find first available row for read placement
+                row = 0
+                placed = False
+                
+                # Try to place read in existing rows
+                for i, positions in enumerate(occupied_positions):
+                    can_place = True
+                    for pos_start, pos_end in positions:
+                        if not (read_end < pos_start or read_start > pos_end):
+                            can_place = False
+                            break
+                    
+                    if can_place:
+                        row = i
+                        occupied_positions[i].append((read_start, read_end))
+                        placed = True
+                        break
+                
+                # If no existing row works, create new row
+                if not placed:
+                    row = len(occupied_positions)
+                    occupied_positions.append([(read_start, read_end)])
+
+                # Calculate y position (from top down)
+                y_pos = self.default_view_height - (row * (self.read_height + self.spacing))
+                
+                # Calculate arrow points
+                x_start = read.reference_start - 1
+                x_end = read.reference_start + read.reference_length - 1
+                y_top = y_pos + self.read_height
+                y_bottom = y_pos
+
+                # Make arrow_width proportional to read height
+                if abs(start-end) > 4000:    
+                    arrow_width = 0
+                else:
+                    arrow_width = abs(start-end)/150  # This makes the arrow width equal to the height for a 45-degree angle
+                y_mid = y_pos + (self.read_height / 2)  # Calculate middle y-position
+
+                if read.is_reverse:
+                    # Left-pointing arrow (reverse strand)
+                    xs = [
+                        x_start, x_end,          # Bottom line
+                        x_end, x_end,            # Right edge
+                        x_end, x_start + arrow_width,  # Top line
+                        x_start + arrow_width/2, x_start,  # Arrow point top
+                        x_start, x_start + arrow_width/2,  # Arrow point bottom
+                        x_start + arrow_width              # Back to start
+                    ]
+                    ys = [
+                        y_bottom, y_bottom,      # Bottom line
+                        y_bottom, y_top,         # Right edge
+                        y_top, y_top,           # Top line
+                        y_top, y_mid,           # Arrow point top
+                        y_mid, y_bottom,        # Arrow point bottom
+                        y_bottom                # Back to start
+                    ]
+                else:
+                    # Right-pointing arrow (forward strand)
+                    xs = [
+                        x_start, x_end - arrow_width,  # Bottom line
+                        x_end - arrow_width/2, x_end,    # Arrow point bottom
+                        x_end, x_end - arrow_width/2,    # Arrow point top
+                        x_end - arrow_width, x_start,  # Back to start
+                        x_start, x_start              # Left edge
+                    ]
+                    ys = [
+                        y_bottom, y_bottom,      # Bottom line
+                        y_bottom, y_mid,         # Arrow point
+                        y_mid, y_top,           # Top line
+                        y_top, y_top,           # Back to start
+                        y_top, y_bottom         # Left edge
+                    ]
+                
+                read_data['xs'].append(xs)
+                read_data['ys'].append(ys)
+                read_data['colors'].append('#ABABAB')
+                
+                # Check for SNPs
+                if read.query_sequence and self.ref_seq:
+                    ref_pos = read.reference_start - self.start
+                    query_pos = 0
+
+                    for op, length in read.cigartuples:
+                        if op == 0:  # Match/mismatch
+                            for i in range(length):
+                                if (ref_pos + i >= 0 and 
+                                    ref_pos + i < len(self.ref_seq) and 
+                                    query_pos + i < len(read.query_sequence)):
+
+                                    ref_base = self.ref_seq[ref_pos + i].upper()
+                                    query_base = read.query_sequence[query_pos + i].upper()
+                                        
+                                    if ref_base != query_base:
+                                        if abs(self.end - self.start) < 70:
+                                            # Text SNPs (when zoomed in)
+                                            snp_text_data['x'].append(read.reference_start + i)
+                                            snp_text_data['y'].append(y_pos + self.read_height/2)  # Center vertically in read
+                                            snp_text_data['color'].append(self.base_colors.get(query_base, '#808080'))
+                                            snp_text_data['text'].append(query_base)
+                                        else:
+                                            # Rectangle SNPs (when zoomed out)
+                                            snp_rect_data['x'].append(read.reference_start + i)
+                                            snp_rect_data['y'].append(y_top - self.read_height/2)  # Use exact same y_pos as read
+                                            snp_rect_data['height'].append(self.read_height)  # Use exact same height as read
+                                            snp_rect_data['color'].append(self.base_colors.get(query_base, '#808080'))
+                                    
+                            ref_pos += length  # Update reference position after the block
+                            query_pos += length
+                        elif op == 1:  # Insertion
+                            query_pos += length
+                        elif op == 2:  # Deletion
+                            ref_pos += length  # Update reference position for deletions
+                            
+        for read in self.reads:
+            if not read.is_unmapped and read.reference_length:
+                read_data['read_names'].append(read.query_name)
+                read_data['mapping_qualities'].append(read.mapping_quality)
+                read_data['cigar_strings'].append(read.cigarstring)
+                read_data['read_lengths'].append(len(read.query_sequence) if read.query_sequence else 0)
+        
+        # Update data sources
+        self.source_reads.data = read_data
+        self.source_snps_rect.data = snp_rect_data
+        self.source_snps_text.data = snp_text_data
+
+        min_y = min([min(y) for y in read_data['ys']]) - self.read_height
+        self.figure_aln.y_range = Range1d(0, self.default_view_height, bounds=(min_y, self.default_view_height))
+
+    def _update(self, ref, chrom, start, end, shared_x_range):
+        """Update the visualization with new data"""
+        self._fetch(ref, self.bam, chrom, start, end)
+        
+        # Update the shared x_range
+        self.shared_x_range.start = start
+        self.shared_x_range.end = end
+
+    def _figure(self, shared_x_range):
+        
+        fig_cov = bplt.figure(
+            height=50,
+            tools="",
+            x_range=shared_x_range,
+            sizing_mode="stretch_width",
+            width_policy="max"
+        )
+
+        fig_cov.xaxis.visible = False
+        fig_cov.yaxis.visible = False
+        fig_cov.grid.visible = False
+        fig_cov.toolbar.logo = None
+
+        fig_aln = bplt.figure(
+            height=self.default_view_height,
+            tools="ywheel_pan",
+            active_scroll="ywheel_pan",
+            x_range=shared_x_range,
+            sizing_mode="stretch_width",
+            width_policy="max"
+        )
+        
+        fig_aln.xaxis.visible = False
+        fig_aln.yaxis.visible = False
+        fig_aln.grid.visible = False
+        fig_aln.toolbar.logo = None
+        
+
+        self.figure_aln = fig_aln
+        self.figure_cov = fig_cov
+        self.figure = column(
+            self.figure_cov,
+            self.figure_aln, 
+            sizing_mode="stretch_width",
+            width_policy="max"
+        )
+        return self.figure
+
+    def _renderers(self):
+        self.figure_cov.vbar(
+            x='x',
+            top='y',
+            width=1,
+            source=self.source_coverage,
+            fill_color='gray',
+            line_color=None
+        )
+
+        # Add message renderer
+        self.figure_aln.text(
+            x='x', y='y', text='text',
+            text_font_size='8pt',
+            text_baseline="middle",
+            text_align="center",
+            text_color='gray',
+            source=self.source_message
+        )
+        
+        # Add read patches renderer
+        patches = self.figure_aln.patches(
+            xs='xs', ys='ys',
+            fill_color='colors',
+            line_color=None,
+            alpha=0.8,
+            source=self.source_reads
+        )
+        
+        # Add SNP renderers (both rect and text)
+        self.figure_aln.rect(
+            x='x',
+            y='y',
+            width=1,
+            height='height',
+            color='color',
+            line_color=None,
+            alpha=0.8,
+            source=self.source_snps_rect
+        )
+        
+        self.figure_aln.text(
+            x='x',
+            y='y',
+            text='text',
+            text_font_size='10pt',
+            text_font_style='bold',
+            text_baseline="middle",
+            text_align="center",
+            text_color='color',
+            source=self.source_snps_text
+        )
+        
+        # Add hover tool
+        hover = HoverTool(
+            tooltips=[
+                ('Read Name', '@read_names'),
+                ('Mapping Quality', '@mapping_qualities'),
+                ('CIGAR', '@cigar_strings'),
+                ('Length', '@read_lengths')
+            ],
+            renderers=[patches]
+        )
+        self.figure_aln.add_tools(hover)
+        self.figure_aln.add_tools(TapTool())
+
+class TrackAnnotation:
+    def __init__(self):
+        pass
+
+class TrackContinuous:
+    def __init__(self):
+        pass
+
 class Pileupy:
     def __init__(self, region, genome=None, reference=None):
         """Initialize the pileup viewer with basic genome information
@@ -50,8 +837,8 @@ class Pileupy:
             self.reference = reference
 
         
-        # Initialize shared x rangeg
-        
+        # Initialize shared x range
+        self.shared_x_range = Range1d(self.start, self.end)
         
         # Initialize plot components
         self.plots = []
@@ -68,12 +855,12 @@ class Pileupy:
         }
 
         self.filtered_group = []
-        
+        self.tracks = []
         # Create initial tracks based on input type
         if genome:
             self._create_base_tracks()
         else:
-            self.track_reference()
+            self.add_track_reference()
             self._update_layout()
 
     def _calculate_optimal_height(self, num_reads, min_height=200, max_height=2000):
@@ -123,11 +910,21 @@ class Pileupy:
         
         self.shared_x_range = Range1d(self.start, self.end)
 
-        self.track_control()
-        self.track_idiogram()
-        self.track_reference()
-        self.track_genes()
-        self._update_layout()
+        # self.track_control()
+        # self.track_idiogram()
+        self.add_track_control()
+        self.add_track_idiogram()
+        self.add_track_reference()
+        # self.track_genes()
+        # self._update_layout()
+        # self._update_tracks()
+
+    def add_track_control(self):
+        track_control = TrackControl(self.chr_lengths, self.chrom, self.start, self.end, self._update_tracks)
+        # self.chrom = track_control.chrom
+        # self.start = track_control.start
+        # self.end = track_control.end
+        self.tracks.append(track_control)
 
     def track_control(self):
         """Create control panel with navigation elements"""
@@ -164,24 +961,25 @@ class Pileupy:
         def redraw_tracks():
             """Redraw all tracks with updated coordinates"""
             # Store existing addon tracks
-            addons = self.plots[4:]
+            # addons = self.plots[4:]
+
             
             # Clear existing plots and recreate base tracks
-            self.plots = []
+            # self.plots = []
             self._create_base_tracks()
             
             # Process addon tracks in batch
-            if addons:
-                for addon in addons:
-                    if len(addon.tags) > 0 and addon.tags[0].get('type') == 'alignment':
-                        self.track_alignment(addon.tags[0].get('bam_path'))
-                    if len(addon.tags) > 0 and addon.tags[0].get('type') == 'annotation':
-                        self.track_alignment(addon.tags[0].get('bed_path'))
-            self._update_layout()
+            # if addons:
+            #     for addon in addons:
+            #         if len(addon.tags) > 0 and addon.tags[0].get('type') == 'alignment':
+            #             self.track_alignment(addon.tags[0].get('bam_path'))
+            #         if len(addon.tags) > 0 and addon.tags[0].get('type') == 'annotation':
+            #             self.track_alignment(addon.tags[0].get('bed_path'))
+            # self._update_layout()
 
-            if curdoc().session_context:
-                curdoc().clear()
-                curdoc().add_root(self.layout)
+            # if curdoc().session_context:
+            #     curdoc().clear()
+            #     curdoc().add_root(self.layout)
 
         def update_region():
             """Update the viewed region"""
@@ -258,168 +1056,125 @@ class Pileupy:
             zoom_out,
             zoom_in,
             spacing=10,
-            margin=(0, 0, 0, 20)
+            margin=(0, 0, 0, 20),
+            sizing_mode="stretch_width",  # Make controls stretch horizontally
+            width_policy="max"
         )
 
+        # self.plots.append(controls_layout)        
+        # self._update_layout()
         controls_layout = column(controls, sizing_mode="stretch_width")
-        self.plots.append(controls_layout)        
-        self._update_layout()
-        
-        return controls_layout
+        self.tracks.append(controls_layout) 
+        # return controls_layout
     
-    def track_idiogram(self):
+    def add_track_idiogram(self):
         """Create chromosome idiogram track with cytobands"""
+        track_idiogram = TrackIdiogram(self.cytobands, self.chr_lengths, self.chrom, self.start, self.end, self.shared_x_range)
+        self.tracks.append(track_idiogram)
         # Create the figure first with shared x range
-        p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
+        # p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
         
-        # Filter cytobands for current chromosome
-        chr_cytobands = [c for c in self.cytobands if c['chrom'] == self.chrom]
-        chr_length = self.chr_lengths.get(self.chrom, 0)
+        # # Filter cytobands for current chromosome
+        # chr_cytobands = [c for c in self.cytobands if c['chrom'] == self.chrom]
+        # chr_length = self.chr_lengths.get(self.chrom, 0)
         
-        if not chr_cytobands or chr_length == 0:
-            print("No cytoband data found for chromosome", self.chrom)
-            return p
+        # if not chr_cytobands or chr_length == 0:
+        #     print("No cytoband data found for chromosome", self.chrom)
+        #     return p
         
-        stain_colors = {
-            'gneg': '#ffffff',
-            'gpos25': '#c0c0c0',
-            'gpos50': '#808080',
-            'gpos75': '#404040',
-            'gpos100': '#000000',
-            'acen': '#963232',
-            'gvar': '#000000',
-            'stalk': '#963232',
-        }
+        # stain_colors = {
+        #     'gneg': '#ffffff',
+        #     'gpos25': '#c0c0c0',
+        #     'gpos50': '#808080',
+        #     'gpos75': '#404040',
+        #     'gpos100': '#000000',
+        #     'acen': '#963232',
+        #     'gvar': '#000000',
+        #     'stalk': '#963232',
+        # }
         
-        # Set up the plot
-        p.height = 50
-        p.y_range.start = 0
-        p.y_range.end = 30
+        # # Set up the plot
+        # p.height = 50
+        # p.y_range.start = 0
+        # p.y_range.end = 30
         
-        # Fix x_range to show full chromosome, regardless of current view
-        p.x_range = Range1d(0, chr_length)
+        # # Fix x_range to show full chromosome, regardless of current view
+        # p.x_range = Range1d(0, chr_length)
         
-        # Draw chromosome backbone
-        p.rect(x=chr_length/2,
-               y=15,
-               width=chr_length,
-               height=10,
-               fill_color='white',
-               line_color='black')
+        # # Draw chromosome backbone
+        # p.rect(x=chr_length/2,
+        #        y=15,
+        #        width=chr_length,
+        #        height=10,
+        #        fill_color='white',
+        #        line_color='black')
         
-        # Draw cytobands
-        for band in chr_cytobands:
-            width = band['end'] - band['start']
-            x = band['start'] + width/2
+        # # Draw cytobands
+        # for band in chr_cytobands:
+        #     width = band['end'] - band['start']
+        #     x = band['start'] + width/2
             
-            if band['stain'] == 'acen':
-                # Draw centromere as triangle
-                if band['name'].startswith('p'):
-                    xs = [band['start'], band['end'], band['start']]
-                    ys = [10, 15, 20]
-                else:
-                    xs = [band['start'], band['end'], band['end']]
-                    ys = [15, 20, 10]
+        #     if band['stain'] == 'acen':
+        #         # Draw centromere as triangle
+        #         if band['name'].startswith('p'):
+        #             xs = [band['start'], band['end'], band['start']]
+        #             ys = [10, 15, 20]
+        #         else:
+        #             xs = [band['start'], band['end'], band['end']]
+        #             ys = [15, 20, 10]
                 
-                p.patches(
-                    xs=[xs],
-                    ys=[ys],
-                    fill_color=stain_colors['acen'],
-                    line_color='black'
-                )
-            else:
-                # Draw regular band
-                p.rect(
-                    x=x,
-                    y=15,
-                    width=width,
-                    height=10,
-                    fill_color=stain_colors.get(band['stain'], '#ffffff'),
-                    line_color='black',
-                    line_width=0.5
-                )
+        #         p.patches(
+        #             xs=[xs],
+        #             ys=[ys],
+        #             fill_color=stain_colors['acen'],
+        #             line_color='black'
+        #         )
+        #     else:
+        #         # Draw regular band
+        #         p.rect(
+        #             x=x,
+        #             y=15,
+        #             width=width,
+        #             height=10,
+        #             fill_color=stain_colors.get(band['stain'], '#ffffff'),
+        #             line_color='black',
+        #             line_width=0.5
+        #         )
         
-        # Add current view indicator (red line)
-        p.rect(
-            x=(self.start + self.end) / 2,  # center x position
-            y=15,  # center y position (same as chromosome backbone)
-            width=self.end - self.start,  # width spans the current view
-            height=10,  # same height as chromosome backbone
-            fill_color='red',
-            fill_alpha=0.2,
-            line_color='red',
-            line_width=1
-        )
+        # # Add current view indicator (red line)
+        # p.rect(
+        #     x=(self.start + self.end) / 2,  # center x position
+        #     y=15,  # center y position (same as chromosome backbone)
+        #     width=self.end - self.start,  # width spans the current view
+        #     height=10,  # same height as chromosome backbone
+        #     fill_color='red',
+        #     fill_alpha=0.2,
+        #     line_color='red',
+        #     line_width=1
+        # )
         
-        # Configure axes
-        p.xaxis.visible = False
-        p.yaxis.visible = False
-        p.grid.visible = False
+        # # Configure axes
+        # p.xaxis.visible = False
+        # p.yaxis.visible = False
+        # p.grid.visible = False
         
-        # Disable all interactions
-        p.toolbar_location = None
-        p.tools = []
-        p.toolbar.tools = []
+        # # Disable all interactions
+        # p.toolbar_location = None
+        # p.tools = []
+        # p.toolbar.tools = []
         
-        self.plots.append(p)
-        self._update_layout()
-        return p
+        # self.plots.append(p)
+        # self._update_layout()
+        # return p
     
-    def track_reference(self):
+    def add_track_reference(self):
         """Create the reference sequence track"""
         # Create the figure first with shared x range
-        p = bplt.figure(width=800, height=50, tools='', x_range=self.shared_x_range)
+        track_reference = TrackReference(self.ref, self.chrom, self.start, self.end, self.shared_x_range)
+        self.tracks.append(track_reference)
+        # self._update_layout()
+        # return track_reference
         
-        x = np.arange(self.start, self.end)
-        y = [2] * len(x)
-         
-        # If zoom level is too far out, disable blocks
-        if (self.end - self.start) >= 10000:
-            p.text(x=[self.start + (self.end - self.start)/2],
-                    y=[25],
-                    text=['Zoom in to see reference sequence'],
-                    text_font_size='8pt',
-                    text_baseline="middle",
-                    text_align="center",
-                    text_color='gray')
-        else:
-            self.ref_seq = self.ref.fetch(self.chrom, self.start, self.end)
-            source = ColumnDataSource({
-                'x': x,
-                'y': y,
-                'text': list(self.ref_seq.upper()),
-                'colors': [self.base_colors.get(base.upper(), 'gray') for base in self.ref_seq]
-            })
-            # If zoom level is too far out, show blocks instead of letters
-            if ((self.end - self.start) < 10000) & ((self.end - self.start) >= 50):
-                p.rect(x='x', y='y', width=1, height=2,
-                    fill_color='colors', line_color=None, source=source)
-            # If zoom level is close enough, show letters
-            else:
-                p.text(x='x', y='y', text='text', text_color='colors', source=source,
-                    text_baseline="middle", text_align="center")
-        
-        # Configure axes
-        p.xaxis.visible = True
-        p.xaxis.axis_label_text_font_size = '10pt'
-        p.xaxis[0].formatter.use_scientific = False
-        p.xaxis.axis_line_color = 'black'
-        p.xaxis.major_tick_line_color = 'black'
-        p.xaxis.minor_tick_line_color = None
-        p.above = p.below  # Move axis to top
-        p.below = []  # Remove bottom axis
-        
-        # Remove y-axis completely
-        p.yaxis.visible = False
-
-        # Remove all grid lines
-        p.grid.visible = False
-        
-        
-        self.plots.append(p)
-        self._update_layout()
-        return p
-
     def track_genes(self):
         """Create gene track visualization"""
         # Create the figure first with shared x range
@@ -541,235 +1296,11 @@ class Pileupy:
             bam_path: Path to BAM file
             mode: Display mode ('collapsed' or 'expanded')
         """
-        bam = pysam.AlignmentFile(bam_path, "rb")
-        reads = list(bam.fetch(self.chrom, self.start, self.end))
-        
-        # Create new figure with shared x range
-        p = bplt.figure(width=800, height=200, 
-                        tools='xwheel_zoom,xwheel_pan',
-                        x_range=self.shared_x_range)
-        p.tags = [{"type": "alignment",
-                   "bam_path": bam_path,
-                    }]
-
-        if (self.end - self.start) >= 10000:
-            p.text(x=[self.start + (self.end - self.start)/2],
-                    y=[25],
-                    text=['Zoom in to view alignments'],
-                    text_font_size='8pt',
-                    text_baseline="middle",
-                    text_align="center",
-                    text_color='gray')
-        else:
-            
-            # Calculate optimal height ONCE using the correct method name
-            optimal_height = self._calculate_optimal_height(len(reads))
-            p.height = optimal_height
-            p.y_range = Range1d(0, optimal_height)
-            
-            # Draw alignment track
-            print(f"Number of reads found: {len(reads)}")
-            
-            read_data = {
-                'xs': [], 'ys': [], 'colors': [],
-                'snp_xs': [], 'snp_ys': [], 'snp_colors': [],  # Added snp_colors
-                'snp_heights': []  # Added for line heights
-            }
-            
-            region_length = self.end - self.start
-            max_rows = optimal_height // (self.read_height + self.spacing)
-            occupied = np.zeros((max_rows, region_length), dtype=bool)
-            
-            processed_count = 0
-            for read_idx, read in enumerate(reads):
-                try:
-                    if not read.is_unmapped and read.reference_length:
-                        read_start_rel = read.reference_start - self.start
-                        read_end_rel = read_start_rel + read.reference_length
-                        
-                        # Find available row
-                        row = 0
-                        while row < max_rows:
-                            start_idx = max(0, read_start_rel)
-                            end_idx = min(region_length, read_end_rel)
-                            check_start = max(0, start_idx - 1)
-                            check_end = min(region_length, end_idx + 1)
-                            
-                            if start_idx < end_idx and not any(occupied[row][check_start:check_end]):
-                                occupied[row][start_idx:end_idx] = True
-                                break
-                            row += 1
-                        
-                        if row < max_rows:
-                            processed_count += 1
-                            y_pos = optimal_height - (row + 1) * (self.read_height + self.spacing)
-                            
-                            # Calculate arrow points
-                            x_start = read.reference_start
-                            x_end = read.reference_start + read.reference_length
-                            y_top = y_pos + self.read_height
-                            y_bottom = y_pos
-                            arrow_width = 2  # Changed from 3 to 2
-                            
-                            y_mid = y_pos + (self.read_height / 2)  # Calculate middle y-position
-                            
-                            if read.is_reverse:
-                                # Left-pointing arrow (reverse strand)
-                                xs = [
-                                    x_start, x_end,          # Bottom line
-                                    x_end, x_end,            # Right edge
-                                    x_end, x_start + arrow_width,  # Top line
-                                    x_start + arrow_width, x_start + arrow_width/2,  # Arrow point top (less sharp)
-                                    x_start + arrow_width/2, x_start + arrow_width,  # Arrow point bottom (less sharp)
-                                    x_start + arrow_width              # Back to start
-                                ]
-                                ys = [
-                                    y_bottom, y_bottom,      # Bottom line
-                                    y_bottom, y_top,         # Right edge
-                                    y_top, y_top,           # Top line
-                                    y_top, y_mid,           # Arrow point top
-                                    y_mid, y_bottom,        # Arrow point bottom
-                                    y_bottom                # Back to start
-                                ]
-                            else:
-                                # Right-pointing arrow (forward strand)
-                                xs = [
-                                    x_start, x_end - arrow_width,  # Bottom line
-                                    x_end - arrow_width, x_end - arrow_width/2,    # Arrow point bottom (less sharp)
-                                    x_end - arrow_width/2, x_end - arrow_width,    # Arrow point top (less sharp)
-                                    x_end - arrow_width, x_start,  # Back to start
-                                    x_start, x_start              # Left edge
-                                ]
-                                ys = [
-                                    y_bottom, y_bottom,      # Bottom line
-                                    y_bottom, y_mid,         # Arrow point
-                                    y_mid, y_top,           # Top line
-                                    y_top, y_top,           # Back to start
-                                    y_top, y_bottom         # Left edge
-                                ]
-                            
-                            read_data['xs'].append(xs)
-                            read_data['ys'].append(ys)
-                            read_data['colors'].append('#E0E0E0')
-                            
-                            # Check for SNPs
-                            if read.query_sequence and self.ref_seq:
-                                ref_pos = read.reference_start - self.start
-                                query_pos = 0
-                                
-                                for op, length in read.cigartuples:
-                                    if op == 0:  # Match/mismatch
-                                        for i in range(length):
-                                            if (ref_pos + i >= 0 and 
-                                                ref_pos + i < len(self.ref_seq) and 
-                                                query_pos + i < len(read.query_sequence)):
-                                                
-                                                ref_base = self.ref_seq[ref_pos + i].upper()
-                                                query_base = read.query_sequence[query_pos + i].upper()
-                                                
-                                                if ref_base != query_base:
-                                                    read_data['snp_xs'].append(read.reference_start + i)
-                                                    read_data['snp_ys'].append(y_pos)
-                                                    read_data['snp_colors'].append(self.base_colors.get(query_base, '#808080'))
-                                                    read_data['snp_heights'].append(self.read_height)
-                                        
-                                        ref_pos += length
-                                        query_pos += length
-                                    elif op == 1:  # Insertion
-                                        query_pos += length
-                                    elif op == 2:  # Deletion
-                                        ref_pos += length
-                                        
-                except Exception as e:
-                    print(f"Error processing read {read_idx}: {str(e)}")
-                    continue
-            print(f"\nProcessed {processed_count} out of {len(reads)} reads")
-            
-            if len(read_data['xs']) > 0:
-                # Add additional data for tooltips
-                read_data['read_names'] = []
-                read_data['mapping_qualities'] = []
-                read_data['cigar_strings'] = []
-                read_data['read_lengths'] = []
-                
-                # Populate the additional data while processing reads
-                for read in reads:
-                    if not read.is_unmapped and read.reference_length:
-                        read_data['read_names'].append(read.query_name)
-                        read_data['mapping_qualities'].append(read.mapping_quality)
-                        read_data['cigar_strings'].append(read.cigarstring)
-                        read_data['read_lengths'].append(len(read.query_sequence) if read.query_sequence else 0)
-                
-                source = ColumnDataSource(read_data)
-                
-                # Add tooltips
-                tooltips = [
-                    ('Read Name', '@read_names'),
-                    ('Mapping Quality', '@mapping_qualities'),
-                    ('CIGAR', '@cigar_strings'),
-                    ('Length', '@read_lengths')
-                ]
-                
-                # Add HoverTool
-                hover_tool = HoverTool(tooltips=tooltips, renderers=[])
-                p.add_tools(hover_tool)
-                
-                # Draw reads as interactive patches
-                patches = p.patches(
-                    xs='xs',
-                    ys='ys',
-                    source=source,
-                    fill_color='colors',
-                    line_color=None,
-                    alpha=0.8,
-                    name='read_patches'  # Add name for identification
-                )
-                
-                # Add hover tool to the patches renderer
-                hover_tool.renderers.append(patches)
-                
-                # Add tap (click) callback
-                source.selected.on_change('indices', lambda attr, old, new: self.on_read_click(attr, old, new, source))
-                
-                # Add TapTool
-                p.add_tools(TapTool())
-                
-                # Draw SNPs
-                if len(read_data['snp_xs']) > 0:
-                    snp_source = ColumnDataSource({
-                        'x': read_data['snp_xs'],
-                        'y': read_data['snp_ys'],
-                        'y1': [y + h for y, h in zip(read_data['snp_ys'], read_data['snp_heights'])],
-                        'color': read_data['snp_colors']
-                    })
-                    
-                    p.segment(
-                        x0='x', y0='y',
-                        x1='x', y1='y1',  # Use pre-calculated y1 values
-                        color='color',
-                        line_width=2,
-                        source=snp_source,
-                        alpha=0.8
-                    )
-            
-            # Adjust y_range based on actual data
-            if len(read_data['ys']) > 0:
-                min_y = min([min(y) for y in read_data['ys']]) - self.read_height
-                max_y = optimal_height
-                p.y_range = Range1d(min_y, max_y)
-            
-            # Remove x-axis ticks and labels
-        p.xaxis.visible = False
-        p.yaxis.visible = False
-        p.grid.visible = False
-        p.toolbar.logo = None
-
-        p2 = self.track_coverage(bam)
-        
-        self.plots.append(p2)
-        self.plots.append(p)
-        self._update_layout()
-        return p
+        # track_reference = TrackReference(self.ref, self.chrom, self.start, self.end, self.shared_x_range)
+        # self.tracks.append(track_reference)
+        bam = pysam.AlignmentFile(bam_path)
+        track_alignment = TrackAlignment(self.ref, bam, self.chrom, self.start, self.end, self.shared_x_range)
+        self.tracks.append(track_alignment)
 
     def track_annotation(self, bed_path):
         """Add an annotation track from BED file
@@ -999,10 +1530,29 @@ class Pileupy:
             return
         
         try:
-            self.layout = column(self.plots)
+            self.layout = column(
+                self.plots,
+                sizing_mode="stretch_width",  # Make layout stretch to container width
+                width_policy="max",  # Allow layout to take maximum width
+                height_policy="fit"  # Fit height to content
+            )
             print(f"Layout updated with {len(self.plots)} plots")
         except Exception as e:
             print(f"Error updating layout: {str(e)}")
+
+    def _update_tracks(self, chrom, start, end):
+        """Update the tracks after adding new tracks"""
+        # Update the shared x_range
+        self.shared_x_range.start = start
+        self.shared_x_range.end = end
+        
+        for track in self.tracks[1:]:
+            track._update(self.ref, chrom, start, end, self.shared_x_range)
+        # layout = column([track.plot for track in self.tracks])
+        # self.plots = []
+        # self._create_base_tracks()
+        # self._update_layout()
+        # pass
 
     def show(self):
         """Display the visualization"""
@@ -1016,11 +1566,38 @@ class Pileupy:
         :param num_procs: Number of worker processes.
         :param show: Whether to open the browser automatically.
         """
-        pass
         def bkapp(doc):
             # Create a fresh layout for each document
-            doc_layout = column(self.plots)
+            doc_layout = column(
+                [track.figure for track in self.tracks],
+                sizing_mode="stretch_both",  # Make layout responsive in both directions
+                width_policy="max",
+                height_policy="max"
+            )
             doc.add_root(doc_layout)
+
+            # Add responsive sizing to document
+            # doc.theme = bplt.document.Theme(
+            #     json={
+            #         'attrs': {
+            #             'Figure': {
+            #                 'sizing_mode': 'stretch_width',
+            #                 'width_policy': 'max',
+            #                 'height_policy': 'fit'
+            #             },
+            #             'Column': {
+            #                 'sizing_mode': 'stretch_width',
+            #                 'width_policy': 'max',
+            #                 'height_policy': 'fit'
+            #             },
+            #             'Row': {
+            #                 'sizing_mode': 'stretch_width',
+            #                 'width_policy': 'max',
+            #                 'height_policy': 'fit'
+            #             }
+            #         }
+            #     }
+            # )
 
         server = Server({'/': bkapp}, port=port, num_procs=num_procs)
         server.start()
