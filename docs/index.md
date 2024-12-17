@@ -1,17 +1,43 @@
-# Welcome to MkDocs
+![logo](img/icon.png)
 
-For full documentation visit [mkdocs.org](https://www.mkdocs.org).
+# PileuPy
 
-## Commands
+A python package for visualizing genome browser tracks easily. 
 
-* `mkdocs new [dir-name]` - Create a new project.
-* `mkdocs serve` - Start the live-reloading docs server.
-* `mkdocs build` - Build the documentation site.
-* `mkdocs -h` - Print help message and exit.
+## Quick start
 
-## Project layout
+Generate standalone HTML report
+```
+from pileupy.main import Pileupy
 
-    mkdocs.yml    # The configuration file.
-    docs/
-        index.md  # The documentation homepage.
-        ...       # Other markdown pages, images and other files.
+browser = Pileupy('chr22:24376166-24376456', genome='hg19')
+browser.add_track_alignment('gstt1_sample.bam')
+browser.show()
+```
+
+Start interactive browser
+```
+from pileupy.main import Pileupy
+
+browser.add_track_alignment('gstt1_sample.bam')
+browser.add_track_annotation('mod.bed')
+browser.serve()
+```
+
+Start interactive browser using command-line
+
+```
+pileupy --region chr22:24376166-24376456 --genome hg19  --alignment gstt1_sample.bam
+```
+
+![logo](img/interactive.png)
+
+## Installation
+
+```
+pip install pileupy
+```
+
+## License
+
+GNU General Public License v3.0

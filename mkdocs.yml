@@ -1,4 +1,9 @@
-site_name: My site
-site_url: https://mydomain.org/mysite
+site_name: PileuPy
+site_url: https://looselab.github.io/pileupy
 theme:
   name: material
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Usage: usage.md
+  - Advanced Usage: advance.md
