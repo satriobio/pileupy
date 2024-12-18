@@ -1,4 +1,4 @@
-# Examples
+# Usage
 
 ## Basic setup
 
@@ -26,6 +26,8 @@ You can also start interactive genome browser with command-line.
 ```
 pileupy view
 ```
+
+Open the app [http://localhost:5006/](http://localhost:5006/)
 
 ## Tracks
 
