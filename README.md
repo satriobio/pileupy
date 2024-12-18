@@ -24,16 +24,11 @@ browser.add_track_annotation('mod.bed')
 browser.serve()
 ```
 
-Start interactive browser using command-line
-
-```
-pileupy --region chr22:24376166-24376456 --genome hg19  --alignment gstt1_sample.bam
-```
-
 ## Installation
 
 ```
-pip install pileupy
+git clone https://github.com/satriobio/pileupy.git 
+pip -e .
 ```
 
 ## License
