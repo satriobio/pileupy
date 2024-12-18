@@ -24,11 +24,11 @@ browser.add_track_annotation('mod.bed')
 browser.serve()
 ```
 
-Start interactive browser using command-line
+<!-- Start interactive browser using command-line
 
 ```
 pileupy --region chr22:24376166-24376456 --genome hg19  --alignment gstt1_sample.bam
-```
+``` -->
 Open the app [http://localhost:5006/](http://localhost:5006/)
 
 ![logo](img/interactive.png)
