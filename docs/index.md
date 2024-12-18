@@ -36,7 +36,8 @@ Open the app [http://localhost:5006/](http://localhost:5006/)
 ## Installation
 
 ```
-pip install pileupy
+git clone https://github.com/satriobio/pileupy.git 
+pip -e .
 ```
 
 ## License
