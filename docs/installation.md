@@ -4,19 +4,6 @@
 
 ```
 git clone https://github.com/satriobio/pileupy.git 
+cd pileupy
 pip -e .
-```
-
-## PIP
-
-Install pileupy using the following command.
-
-```
-pip install pileupy
-```
-
-## Conda
-
-```
-conda install pileupy
 ```

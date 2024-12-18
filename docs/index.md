@@ -32,6 +32,7 @@ Open the app [http://localhost:5006/](http://localhost:5006/)
 
 ```
 git clone https://github.com/satriobio/pileupy.git 
+cd pileupy
 pip -e .
 ```
 
